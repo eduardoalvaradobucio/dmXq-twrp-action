@@ -2,44 +2,46 @@ name: build twrp
 
 on:
   workflow_dispatch:
-  
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     environment:
-      name: /dev/null
+      name: build
       url: /dev/null
-    
+
     permissions:
       contents: write
       actions: write
       id-token: write
 
-#    concurrency:
-#      group: "none"
-#      cancel-in-progress: false
-    
     strategy:
-      fail-fast: false      
+      fail-fast: false
       matrix:
         target: [dm2q]
-#      max-parallel: 1
 
     steps:
     - name: Check out
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
-    
+
     - name: Prepare the environment
+      shell: bash
       run: |
-        sudo apt update
-        sudo apt -y upgrade
-        sudo apt -y install ccache gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev lz4 tar libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev python3
-      continue-on-error: true
-        
+        sudo apt-get update
+        sudo apt-get -y upgrade
+        sudo apt-get install -y --no-install-recommends \
+          ccache gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev \
+          x11proto-core-dev libx11-dev tree lib32z1 libgl1-mesa-dev libxml2-utils xsltproc bc \
+          bison flex curl lzop pngcrush zlib1g-dev schedtool libncurses5 libncurses5-dev \
+          automake build-essential lzip unzip rsync python3 python3-pip pkg-config libssl-dev
+      # No continue-on-error: fail early on package/install issues
+
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
@@ -49,71 +51,91 @@ jobs:
       uses: actions/setup-java@v3
       with:
         distribution: 'zulu'
-        java-version: '11'    
+        java-version: '11'
 
     - name: Install repo
+      shell: bash
       run: |
-        mkdir ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        mkdir -p ~/bin
+        curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
         chmod a+x ~/bin/repo
         sudo ln -sf ~/bin/repo /usr/bin/repo
 
     - name: Init repo
+      shell: bash
       run: |
         export HOME=${GITHUB_WORKSPACE}
-        cd ${GITHUB_WORKSPACE}
-        chmod +x *
+        cd "${GITHUB_WORKSPACE}"
         git config --global user.name "github-actions[bot]"
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 > /dev/null 2>&1
+        repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
 
     - name: Repo sync & copy moded stuff
+      shell: bash
       run: |
-        cd ${GITHUB_WORKSPACE}
-        repo sync -j$(nproc --all) > /dev/null 2>&1
-        mv -f images/* bootable/recovery/gui/theme/portrait_hdpi/images/
-        mv -f DroidSansMono.ttf bootable/recovery/gui/theme/common/fonts/
-        mv -f portrait.xml bootable/recovery/gui/theme/common/
-        mv -f ui.xml bootable/recovery/gui/theme/portrait_hdpi/
+        cd "${GITHUB_WORKSPACE}"
+        repo sync --force-sync --no-clone-bundle -j"$(nproc --all)"
+        # Only move files if sources exist to avoid failing the job
+        if [ -d images ]; then
+          if [ -d bootable/recovery/gui/theme/portrait_hdpi/images ]; then
+            mv -f images/* bootable/recovery/gui/theme/portrait_hdpi/images/ || true
+          fi
+        fi
+        if [ -f DroidSansMono.ttf ] && [ -d bootable/recovery/gui/theme/common/fonts ]; then
+          mv -f DroidSansMono.ttf bootable/recovery/gui/theme/common/fonts/ || true
+        fi
+        if [ -f portrait.xml ] && [ -d bootable/recovery/gui/theme/common ]; then
+          mv -f portrait.xml bootable/recovery/gui/theme/common/ || true
+        fi
+        if [ -f ui.xml ] && [ -d bootable/recovery/gui/theme/portrait_hdpi ]; then
+          mv -f ui.xml bootable/recovery/gui/theme/portrait_hdpi/ || true
+        fi
         ls -al
 
     - name: Clone device tree
+      shell: bash
       run: |
-        cd ${GITHUB_WORKSPACE}
-        git clone -b android-12.1 https://github.com/eduardoalvaradobucio/android_device_samsung_${{ matrix.target }}.git device/samsung/${{ matrix.target }} > /dev/null 2>&1
-        
+        cd "${GITHUB_WORKSPACE}"
+        git clone -b android-12.1 https://github.com/eduardoalvaradobucio/android_device_samsung_${{ matrix.target }}.git device/samsung/${{ matrix.target }}
+
     - name: Clone common tree
+      shell: bash
       run: |
-        git clone -b android-12.1 https://github.com/eduardoalvaradobucio/android_device_samsung_sm8550-common.git device/samsung/sm8550-common > /dev/null 2>&1
-    
+        cd "${GITHUB_WORKSPACE}"
+        git clone -b android-12.1 https://github.com/eduardoalvaradobucio/android_device_samsung_sm8550-common.git device/samsung/sm8550-common
+
     - name: Setup ccache before build
+      shell: bash
       run: |
         export USE_CCACHE=1
         export CCACHE_EXEC=/usr/bin/ccache
         ccache --max-size=50G
-        ccache -o compression=true
+        ccache -o compression=true || ccache --set-config=compression=true
         export CC="ccache gcc"
         export CXX="ccache g++"
         ccache -s
-    
+
     - name: Building recovery
       id: twrp
+      shell: bash
       run: |
-        cd ${GITHUB_WORKSPACE}  
-        ./build.sh ${{ matrix.target }} 1
-      continue-on-error: true
+        cd "${GITHUB_WORKSPACE}"
+        ./build.sh "${{ matrix.target }}" 1
 
     - name: Check ccache after build
+      shell: bash
       run: |
         ccache -s
 
     - name: Set variables
+      id: var
+      shell: bash
       run: |
         echo "date=$(TZ=America/Los_Angeles date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
         echo "Outdir=${GITHUB_WORKSPACE}" >> $GITHUB_OUTPUT
-      id: var
 
     - name: Publish to github
+      if: ${{ steps.twrp.outcome == 'success' }}
       uses: softprops/action-gh-release@v1
       with:
         files: ${{ steps.var.outputs.Outdir }}/twrp-3.7.1_12-0-${{ matrix.target }}.img.tar
@@ -122,4 +144,4 @@ jobs:
         body: |
           - ${{ steps.var.outputs.date }}
       env:
-        GITHUB_TOKEN: ${{ secrets.TEST }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
